@@ -5,6 +5,8 @@
  *   All rights reserved.
  *
  ******************************************************************************/
+#include <stdbool.h>
+#include <stdio.h>
 
 #include "lpc17xx_pinsel.h"
 #include "lpc17xx_gpio.h"
@@ -18,186 +20,75 @@
 #include "oled.h"
 #include "rgb.h"
 
-static uint8_t barPos = 2;
+#define WARNING_LOWER			50
+#define WARNING_UPPER 			1000
+#define INDICATOR_TIME_UNIT		208
+#define RGB_BLINK_TIME			333
 
-static void moveBar(uint8_t steps, uint8_t dir)
+/*****************************************************************************
+ *   Mapping of Terms to Peripherals
+ *
+ *   MODE_TOGGLE			SW4
+ *   GET_INFORMATION		SW3
+ *
+ ******************************************************************************/
+
+/*
+ * Set up msTicks related variables and functions
+ * Call SysTick_Config(SystemCoreClock/1000);	in main later
+ */
+volatile uint32_t msTicks = 0;
+
+void SysTick_Handler(void){
+	msTicks++;
+}
+
+uint32_t getTicks(void){
+	return msTicks;
+}
+
+int check_time (int millis, int *initial_time) {
+	int current_time;
+
+	current = get_time();
+
+	//Check if millis have passed
+	if(current_time - *initial_time >= millis) {
+		*initial_time = get_time();
+		return 1;
+	}
+	else {
+		return 0;
+	}
+}
+
+/*
+ * Initialize protocols
+ */
+
+static void init_GPIO(void)
 {
-    uint16_t ledOn = 0;
+	PINSEL_CFG_Type PinCfg;
 
-    if (barPos == 0)
-        ledOn = (1 << 0) | (3 << 14);
-    else if (barPos == 1)
-        ledOn = (3 << 0) | (1 << 15);
-    else
-        ledOn = 0x07 << (barPos-2);
+	//Temperature Sensor
+	//Use J25 for PIO1_5 -> P0.2
+	PinCfg.Funcnum = 0;
+	PinCfg.OpenDrain = 0;
+	PinCfg.Pinmode = 0;
+	PinCfg.Portnum = 0;
+	PinCfg.Pinnum = 2;
+	PINSEL_ConfigPin(&PinCfg);
+	GPIO_SetDir(0, 1<<2, 0);
 
-    barPos += (dir*steps);
-    barPos = (barPos % 16);
 
-    pca9532_setLeds(ledOn, 0xffff);
+
+
+
+
+
+
+
 }
-
-
-static void drawOled(uint8_t joyState)
-{
-    static int wait = 0;
-    static uint8_t currX = 48;
-    static uint8_t currY = 32;
-    static uint8_t lastX = 0;
-    static uint8_t lastY = 0;
-
-    if ((joyState & JOYSTICK_CENTER) != 0) {
-        oled_clearScreen(OLED_COLOR_BLACK);
-        return;
-    }
-
-    if (wait++ < 3)
-        return;
-
-    wait = 0;
-
-    if ((joyState & JOYSTICK_UP) != 0 && currY > 0) {
-        currY--;
-    }
-
-    if ((joyState & JOYSTICK_DOWN) != 0 && currY < OLED_DISPLAY_HEIGHT-1) {
-        currY++;
-    }
-
-    if ((joyState & JOYSTICK_RIGHT) != 0 && currX < OLED_DISPLAY_WIDTH-1) {
-        currX++;
-    }
-
-    if ((joyState & JOYSTICK_LEFT) != 0 && currX > 0) {
-        currX--;
-    }
-
-    if (lastX != currX || lastY != currY) {
-        oled_putPixel(currX, currY, OLED_COLOR_WHITE);
-        lastX = currX;
-        lastY = currY;
-    }
-}
-
-
-#define NOTE_PIN_HIGH() GPIO_SetValue(0, 1<<26);
-#define NOTE_PIN_LOW()  GPIO_ClearValue(0, 1<<26);
-
-
-
-
-static uint32_t notes[] = {
-        2272, // A - 440 Hz
-        2024, // B - 494 Hz
-        3816, // C - 262 Hz
-        3401, // D - 294 Hz
-        3030, // E - 330 Hz
-        2865, // F - 349 Hz
-        2551, // G - 392 Hz
-        1136, // a - 880 Hz
-        1012, // b - 988 Hz
-        1912, // c - 523 Hz
-        1703, // d - 587 Hz
-        1517, // e - 659 Hz
-        1432, // f - 698 Hz
-        1275, // g - 784 Hz
-};
-
-static void playNote(uint32_t note, uint32_t durationMs) {
-
-    uint32_t t = 0;
-
-    if (note > 0) {
-
-        while (t < (durationMs*1000)) {
-            NOTE_PIN_HIGH();
-            Timer0_us_Wait(note / 2);
-            //delay32Us(0, note / 2);
-
-            NOTE_PIN_LOW();
-            Timer0_us_Wait(note / 2);
-            //delay32Us(0, note / 2);
-
-            t += note;
-        }
-
-    }
-    else {
-    	Timer0_Wait(durationMs);
-        //delay32Ms(0, durationMs);
-    }
-}
-
-static uint32_t getNote(uint8_t ch)
-{
-    if (ch >= 'A' && ch <= 'G')
-        return notes[ch - 'A'];
-
-    if (ch >= 'a' && ch <= 'g')
-        return notes[ch - 'a' + 7];
-
-    return 0;
-}
-
-static uint32_t getDuration(uint8_t ch)
-{
-    if (ch < '0' || ch > '9')
-        return 400;
-
-    /* number of ms */
-
-    return (ch - '0') * 200;
-}
-
-static uint32_t getPause(uint8_t ch)
-{
-    switch (ch) {
-    case '+':
-        return 0;
-    case ',':
-        return 5;
-    case '.':
-        return 20;
-    case '_':
-        return 30;
-    default:
-        return 5;
-    }
-}
-
-static void playSong(uint8_t *song) {
-    uint32_t note = 0;
-    uint32_t dur  = 0;
-    uint32_t pause = 0;
-
-    /*
-     * A song is a collection of tones where each tone is
-     * a note, duration and pause, e.g.
-     *
-     * "E2,F4,"
-     */
-
-    while(*song != '\0') {
-        note = getNote(*song++);
-        if (*song == '\0')
-            break;
-        dur  = getDuration(*song++);
-        if (*song == '\0')
-            break;
-        pause = getPause(*song++);
-
-        playNote(note, dur);
-        //delay32Ms(0, pause);
-        Timer0_Wait(pause);
-
-    }
-}
-
-static uint8_t * song = (uint8_t*)"C2.C2,D4,C4,F4,E8,";
-        //(uint8_t*)"C2.C2,D4,C4,F4,E8,C2.C2,D4,C4,G4,F8,C2.C2,c4,A4,F4,E4,D4,A2.A2,H4,F4,G4,F8,";
-        //"D4,B4,B4,A4,A4,G4,E4,D4.D2,E4,E4,A4,F4,D8.D4,d4,d4,c4,c4,B4,G4,E4.E2,F4,F4,A4,A4,G8,";
-
-
 
 static void init_ssp(void)
 {
@@ -255,21 +146,6 @@ static void init_i2c(void)
 	I2C_Cmd(LPC_I2C2, ENABLE);
 }
 
-static void init_GPIO(void)
-{
-	// Initialize button
-
-
-
-
-
-
-
-
-
-
-
-}
 
 
 int main (void) {
