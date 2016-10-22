@@ -27,8 +27,7 @@
 #define INDICATOR_TIME_UNIT		208
 #define SSD_TIME_UNIT			1000
 #define RGB_BLINK_TIME			333
-#define RED_LED					3
-#define BLUE_LED				4
+
 
 /*****************************************************************************
  *   Mapping of Terms to Peripherals
@@ -84,6 +83,7 @@ static bool Waste_Flag = false;
 
 void PASSIVE(){
 	int i = 0;
+	int detected = 0;
 	int initial_time_SSD = getTicks();
 	int initial_time_RGB = getTicks();
 
@@ -111,17 +111,8 @@ void PASSIVE(){
 		}
 
 		if (check_time(RGB_BLINK_TIME, &initial_time_RGB)){
-			if (check_Algae(light) && (check_Waste(light))){
-	//			printf("Algae!\n");
-				blink_LED(BLUE_LED);
-				blink_LED(RED_LED);
-			}
-			else if (check_Algae(light)){
-				blink_LED(BLUE_LED);
-			}
-			else if (check_Waste(light)){
-				blink_LED(RED_LED);
-			}
+			detected = detection_case(check_Waste(light), check_Algae(light));
+			blink_LED_PASSIVE(detected);
 		}
 	}
 }
@@ -186,29 +177,57 @@ int check_Waste(int light){
 		return 1;
 }
 
-void blink_LED(int LED){
-	int port = 0;
-	int pin = 0;
-	int led_state;
+int detection_case(int check_Waste, int check_Algae){
+	if ((check_Waste) && (check_Algae)){
+		return 3;
+	}
+	else if (check_Waste){
+		return 2;
+	}
+	else if (check_Algae){
+		return 1;
+	}
+	else
+		return 0;
+}
 
-	//Red LED
-	if(LED == 3){
-		port = 2;
-		pin = 0;
+
+
+void blink_LED_PASSIVE(int detected){
+	int Red_port = 2;
+	int Red_pin = 0;
+	int Red_state;
+
+	int Blue_port = 0;
+	int Blue_pin = 26;
+	int Blue_state;
+
+	Red_state = GPIO_ReadValue(Red_port);
+	Blue_state = GPIO_ReadValue(Blue_port);
+
+	if(detected == 0){
+		return;
 	}
-	//Blue LED
-	if(LED == 4){
-		port = 0;
-		pin = 26;
+	else if(detected == 1){
+		GPIO_ClearValue(Blue_port,(Blue_state & (1 << Blue_pin)));
+		GPIO_SetValue(Blue_port,((~Blue_state) & (1 << Blue_pin)));
 	}
-	// Read current state of GPIO P(port)_0..31, which includes LED
-	led_state = GPIO_ReadValue(port);
-	// Turn off LED if it is on
-	// (ANDing to ensure we only affect the LED output)
-	GPIO_ClearValue(port,(led_state & (1 << pin)));
-	// Turn on LED if it is off
-	// (ANDing to ensure we only affect the LED output)
-	GPIO_SetValue(port,((~led_state) & (1 << pin)));
+	else if(detected == 2){
+		GPIO_ClearValue(Red_port,(Red_state & (1 << Red_pin)));
+		GPIO_SetValue(Red_port,((~Red_state) & (1 << Red_pin)));
+	}
+	else if(detected == 3){
+		if(((Red_state >> Red_pin) & 1) != ((Blue_state >> Blue_pin) & 1)){
+			GPIO_ClearValue(Blue_port,(Blue_state & (1 << Blue_pin)));
+			GPIO_SetValue(Blue_port,((~Blue_state) & (1 << Blue_pin)));
+		}
+		else{
+			GPIO_ClearValue(Blue_port,(Blue_state & (1 << Blue_pin)));
+			GPIO_SetValue(Blue_port,((~Blue_state) & (1 << Blue_pin)));
+			GPIO_ClearValue(Red_port,(Red_state & (1 << Red_pin)));
+			GPIO_SetValue(Red_port,((~Red_state) & (1 << Red_pin)));
+		}
+	}
 }
 
 /*
