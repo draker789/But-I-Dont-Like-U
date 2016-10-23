@@ -77,6 +77,10 @@ static uint8_t text[100];
 static bool Algae_Flag = false;
 static bool Waste_Flag = false;
 
+static bool Start_Flag = false;
+static bool Date_Flag = false;
+static int SW4;
+
 /*
  * Abstracted Functions
  */
@@ -101,7 +105,6 @@ void PASSIVE(){
 				i = 0;
 			}
 			led7seg_setChar(array[i], FALSE);
-	//		printf("Char %c i = %d\n", array[i], i);
 			i++;
 		}
 
@@ -120,7 +123,6 @@ void PASSIVE(){
 void Sensors_Read(){
 	temperature = (temp_read()/10.0);
 	light = light_read();
-//	printf("light = %d\n", light);
 	acc_read(&x, &y, &z);
 	x = x+xoff;
 	y = y+yoff;
@@ -130,16 +132,15 @@ void Sensors_Read(){
 
 void OLED_Update(){
 
-	sprintf(text,"Temp: %.2f", temperature);
+	sprintf(text,"Temp: %.2f        ", temperature);
 	oled_putString(1, 10, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
-	sprintf(text,"LUX : %d", light);
-	printf("light = %d, 	actual = %d\n ", text, light);
+	sprintf(text,"LUX : %d          ", light);
 	oled_putString(1, 20, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
-	sprintf(text,"AX  : %d", x);
+	sprintf(text,"AX  : %d          ", x);
 	oled_putString(1, 30, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
-	sprintf(text,"AY  : %d", y);
+	sprintf(text,"AY  : %d          ", y);
 	oled_putString(1, 40, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
-	sprintf(text,"AZ  : %d", z);
+	sprintf(text,"AZ  : %d          ", z);
 	oled_putString(1, 50, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
 }
 
@@ -191,8 +192,6 @@ int detection_case(int check_Waste, int check_Algae){
 		return 0;
 }
 
-
-
 void blink_LED_PASSIVE(int detected){
 	int Red_port = 2;
 	int Red_pin = 0;
@@ -230,6 +229,15 @@ void blink_LED_PASSIVE(int detected){
 	}
 }
 
+int MODE_TOGGLE_Start(){
+	if (!((GPIO_ReadValue(1) >> 31) & 0x01)){
+		Start_Flag = true;
+		return 1;
+	}
+	else
+		return 0;
+}
+
 /*
  * Initialize protocols
  */
@@ -256,7 +264,7 @@ static void init_GPIO(void)
 	PinCfg.OpenDrain = 0;
 	PinCfg.Pinmode = 0;
 	PINSEL_ConfigPin(&PinCfg);
-	GPIO_SetDir(0, 1<<31, 0);
+	GPIO_SetDir(1, 1<<31, 0);
 
 	//RED LED
 	//Use PIO1_9 -> P2.0
@@ -362,7 +370,12 @@ int main (void) {
 
     while (1)
     {
-    PASSIVE();
+    led7seg_setChar(' ', FALSE);
+    MODE_TOGGLE_Start();
+
+    while(Start_Flag){
+    	PASSIVE();
+    }
 
 	/* ####### Accelerometer and LEDs  ###### */
 	/* # */
