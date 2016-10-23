@@ -79,45 +79,31 @@ static bool Waste_Flag = false;
 
 static bool Start_Flag = false;
 static bool Date_Flag = false;
-static int SW4;
+static bool Passive_Flag = false;
+
+static bool SW4 = false;
+static bool SW3 = false;
+
+void EINT3_IRQHandler(void){
+// Determine whether GPIO Interrupt P2.10 has occurred
+	if ((LPC_GPIOINT->IO2IntStatF>>10)& 0x1){
+		SW3 = true;
+		printf("GPIO Interrupt %d\n", SW3);
+		// Clear GPIO Interrupt P2.10
+		LPC_GPIOINT->IO2IntClr = 1<<10;
+	}
+}
 
 /*
  * Abstracted Functions
  */
 
-void PASSIVE(){
-	int i = 0;
-	int detected = 0;
-	int initial_time_SSD = getTicks();
-	int initial_time_RGB = getTicks();
+static void Decrease_LED_array(uint8_t steps){
+	uint16_t ledOn = 0;
 
-	char array[16] = {'0','1','2','3','4','5','6','7','8','9','A','8','C','0','E','F'};
+	ledOn = 0xffff >> steps;
 
-	Sensors_Read();
-	sprintf(text, "				PASSIVE");
-	oled_putString(1, 00, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
-	OLED_Update();
-
-	while(1){
-
-		if (check_time(SSD_TIME_UNIT, &initial_time_SSD)){
-			if(i == 16){
-				i = 0;
-			}
-			led7seg_setChar(array[i], FALSE);
-			i++;
-		}
-
-		if (check_i_PASSIVE(i)){
-			Sensors_Read();
-			OLED_Update();
-		}
-
-		if (check_time(RGB_BLINK_TIME, &initial_time_RGB)){
-			detected = detection_case(check_Waste(light), check_Algae(light));
-			blink_LED_PASSIVE(detected);
-		}
-	}
+	pca9532_setLeds(ledOn, 0xffff);
 }
 
 void Sensors_Read(){
@@ -144,8 +130,22 @@ void OLED_Update(){
 	oled_putString(1, 50, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
 }
 
+void OLED_Update_DATE(){
+
+	sprintf(text,"Temp: DATE MODE        ");
+	oled_putString(1, 10, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+	sprintf(text,"LUX : DATE MODE        ");
+	oled_putString(1, 20, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+	sprintf(text,"AX  : DATE MODE        ");
+	oled_putString(1, 30, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+	sprintf(text,"AY  : DATE MODE        ");
+	oled_putString(1, 40, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+	sprintf(text,"AZ  : DATE MODE        ");
+	oled_putString(1, 50, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+}
+
 int check_i_PASSIVE(int i){
-	if ((i == 5)||(i == 10)||(i == 15)){
+	if ((i == 6)||(i == 11)||(i == 16)){
 		return 1;
 	}
 	else
@@ -230,6 +230,7 @@ void blink_LED_PASSIVE(int detected){
 }
 
 int MODE_TOGGLE_Start(){
+	//SW4 is default pulled HIGH, check for LOW when pushed
 	if (!((GPIO_ReadValue(1) >> 31) & 0x01)){
 		Start_Flag = true;
 		return 1;
@@ -237,6 +238,113 @@ int MODE_TOGGLE_Start(){
 	else
 		return 0;
 }
+
+int MODE_TOGGLE(int i){
+	if (!((GPIO_ReadValue(1) >> 31) & 0x01)){
+		SW4 = true;
+		return 2;
+	}
+	else if (SW4 && (i == 16)){
+		Date_Flag = true;
+		SW4 = false;
+		return 1;
+	}
+	else
+		return 0;
+}
+
+int GET_INFORMATION(){
+	Sensors_Read();
+	OLED_Update();
+	SW3 = false;
+}
+
+void PASSIVE(){
+	int i = 0;
+	int detected = 0;
+	int initial_time_SSD = getTicks();
+	int initial_time_RGB = getTicks();
+
+	char array[16] = {'0','1','2','3','4','5','6','7','8','9','A','8','C','0','E','F'};
+
+	Date_Flag = false;
+	Waste_Flag = false;
+	Algae_Flag = false;
+	// Disable EINT3 interrupt
+	NVIC_DisableIRQ(EINT3_IRQn);
+
+	while (!Date_Flag){
+		Sensors_Read();
+		sprintf(text, "				PASSIVE		");
+		oled_putString(1, 00, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+		OLED_Update();
+
+		while(1){
+			MODE_TOGGLE(i);
+
+			if (check_time(SSD_TIME_UNIT, &initial_time_SSD)){
+				if (Date_Flag){
+					break;
+				}
+				if(i == 16){
+					i = 0;
+				}
+				led7seg_setChar(array[i], FALSE);
+				i++;
+				printf("SW4 = %d     DATE_FLAG = %d      i = %d\n", SW4, Date_Flag, i);
+			}
+
+			if (check_i_PASSIVE(i)){
+				Sensors_Read();
+				OLED_Update();
+			}
+
+			if (check_time(RGB_BLINK_TIME, &initial_time_RGB)){
+				detected = detection_case(check_Waste(light), check_Algae(light));
+				blink_LED_PASSIVE(detected);
+			}
+		}
+	}
+}
+
+void DATE(){
+	int steps = 0;
+	int initial_time_LED = getTicks();
+
+	Passive_Flag = false;
+	GPIO_ClearValue( 2, 1);			//turn off red led
+	GPIO_ClearValue( 0, (1<<26) );	//turn off blue led
+
+	while(!Passive_Flag){
+		steps = 0;
+		led7seg_setChar(' ', FALSE);
+		sprintf(text, "					DATE		");
+		oled_putString(1, 00, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+		OLED_Update_DATE();
+
+		// Clear GPIO Interrupt P2.10
+		LPC_GPIOINT->IO2IntClr = 1<<10;
+	    // Enable EINT3 interrupt
+	    NVIC_EnableIRQ(EINT3_IRQn);
+
+		while(1){
+			Decrease_LED_array(steps);
+			if(check_time(INDICATOR_TIME_UNIT, &initial_time_LED)){
+				steps++;
+				printf("Steps: %d\n", steps);
+				if(steps == 17){
+					Passive_Flag = true;
+					break;
+				}
+			}
+			if(SW3){
+				GET_INFORMATION();
+			}
+		}
+	}
+}
+
+
 
 /*
  * Initialize protocols
@@ -265,6 +373,16 @@ static void init_GPIO(void)
 	PinCfg.Pinmode = 0;
 	PINSEL_ConfigPin(&PinCfg);
 	GPIO_SetDir(1, 1<<31, 0);
+
+	//SW3 GET_INFORMATION
+	//Use PIO2_9 -> P2.10
+	PinCfg.Portnum = 2;
+	PinCfg.Pinnum = 10;
+	PinCfg.Funcnum = 1;
+	PinCfg.OpenDrain = 0;
+	PinCfg.Pinmode = 0;
+	PINSEL_ConfigPin(&PinCfg);
+	GPIO_SetDir(2, 1<<10, 0);
 
 	//RED LED
 	//Use PIO1_9 -> P2.0
@@ -337,7 +455,6 @@ static void init_i2c(void)
 }
 
 
-
 int main (void) {
 
     init_i2c();
@@ -355,6 +472,8 @@ int main (void) {
 
     SysTick_Config(SystemCoreClock/1000);
 
+
+
     /*
 	* Assume base board in zero-g position when reading first value.
 	*/
@@ -363,6 +482,9 @@ int main (void) {
 	yoff = 0-y;
 	zoff = 0-z;
 
+
+	// Enable GPIO Interrupt P2.10
+	LPC_GPIOINT->IO2IntEnF |= 1<<10;
 
     oled_clearScreen(OLED_COLOR_BLACK);
 	GPIO_ClearValue( 2, 1);			//turn off red led
@@ -375,6 +497,7 @@ int main (void) {
 
     while(Start_Flag){
     	PASSIVE();
+    	DATE();
     }
 
 	/* ####### Accelerometer and LEDs  ###### */
