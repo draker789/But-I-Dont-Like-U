@@ -14,6 +14,7 @@
 #include "lpc17xx_ssp.h"
 #include "lpc17xx_timer.h"
 
+
 #include "joystick.h"
 #include "pca9532.h"
 #include "acc.h"
@@ -65,6 +66,47 @@ int check_time (int millis, int *initial_time) {
 }
 
 /*
+ * Set up usTicks related variables and functions
+ * For generation of 100us for temp_init(&getusTicks); in main later
+ */
+
+volatile uint32_t usTicks = 0;
+
+uint32_t getusTicks(void)
+{
+	return usTicks;
+}
+
+//Produces a interrupt in Timer0 every 100us
+void init_timer(void){
+	TIM_TIMERCFG_Type timer_cfg;
+	TIM_MATCHCFG_Type match_cfg;
+
+	timer_cfg.PrescaleOption = TIM_PRESCALE_TICKVAL;
+	timer_cfg.PrescaleValue = 25;							//Clear Prescale counter when PC == 25 and produce a tick in TC
+	TIM_Init(LPC_TIM0, TIM_TIMER_MODE, &timer_cfg);
+
+	match_cfg.ExtMatchOutputType = 0;
+	match_cfg.IntOnMatch = ENABLE;
+	match_cfg.MatchChannel = 0;
+	match_cfg.MatchValue = 100;								//Generate an interrupt when TC match MR0;
+	match_cfg.ResetOnMatch = ENABLE;
+	match_cfg.StopOnMatch = DISABLE;
+	TIM_ConfigMatch(LPC_TIM0, &match_cfg);
+
+	TIM_Cmd(LPC_TIM0, ENABLE);
+	TIM_ResetCounter(LPC_TIM0);
+
+}
+
+//Count instances of 100us using interrupt handlers and usTicks
+void TIMER0_IRQHandler(void)
+{
+		usTicks++;
+		LPC_TIM0->IR|=0x01;
+}
+
+/*
  * Declare Global Sensors Variables
  */
 uint32_t light = 0;
@@ -88,10 +130,10 @@ void EINT3_IRQHandler(void){
 // Determine whether GPIO Interrupt P2.10 has occurred
 	if ((LPC_GPIOINT->IO2IntStatF>>10)& 0x1){
 		SW3 = true;
-		printf("GPIO Interrupt %d\n", SW3);
 		// Clear GPIO Interrupt P2.10
 		LPC_GPIOINT->IO2IntClr = 1<<10;
 	}
+
 }
 
 /*
@@ -115,23 +157,40 @@ void Sensors_Read(){
 	z = z+zoff;
 
 }
-
 void OLED_Update(){
 
-	sprintf(text,"Temp: %.2f        ", temperature);
+	sprintf(text,"%.2f        ", temperature);
+	oled_putString(37, 10, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+	sprintf(text,"%d          ", light);
+	oled_putString(37, 20, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+	sprintf(text,"%d          ", x);
+	oled_putString(37, 30, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+	sprintf(text,"%d          ", y);
+	oled_putString(37, 40, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+	sprintf(text,"%d          ", z);
+	oled_putString(37, 50, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+}
+
+void OLED_Update_PASSIVE(){
+
+	sprintf(text, "				PASSIVE		");
+	oled_putString(1, 00, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+	sprintf(text,"Temp:         ");
 	oled_putString(1, 10, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
-	sprintf(text,"LUX : %d          ", light);
+	sprintf(text,"LUX :         ");
 	oled_putString(1, 20, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
-	sprintf(text,"AX  : %d          ", x);
+	sprintf(text,"AX  :         ");
 	oled_putString(1, 30, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
-	sprintf(text,"AY  : %d          ", y);
+	sprintf(text,"AY  :         ");
 	oled_putString(1, 40, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
-	sprintf(text,"AZ  : %d          ", z);
+	sprintf(text,"AZ  :         ");
 	oled_putString(1, 50, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
 }
 
 void OLED_Update_DATE(){
 
+	sprintf(text, "					DATE		");
+	oled_putString(1, 00, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
 	sprintf(text,"Temp: DATE MODE        ");
 	oled_putString(1, 10, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
 	sprintf(text,"LUX : DATE MODE        ");
@@ -178,6 +237,7 @@ int check_Waste(int light){
 		return 1;
 }
 
+//Check if Waste and Algae are detected, return corresponding scenario
 int detection_case(int check_Waste, int check_Algae){
 	if ((check_Waste) && (check_Algae)){
 		return 3;
@@ -192,6 +252,7 @@ int detection_case(int check_Waste, int check_Algae){
 		return 0;
 }
 
+//Blink correct combination of LED according to the detected scenario
 void blink_LED_PASSIVE(int detected){
 	int Red_port = 2;
 	int Red_pin = 0;
@@ -240,11 +301,11 @@ int MODE_TOGGLE_Start(){
 }
 
 int MODE_TOGGLE(int i){
-	if (!((GPIO_ReadValue(1) >> 31) & 0x01)){
+	if (!((GPIO_ReadValue(1) >> 31) & 0x01)){		//Check if SW4 was pressed
 		SW4 = true;
 		return 2;
 	}
-	else if (SW4 && (i == 16)){
+	else if (SW4 && (i == 16)){						//Check if SW4 was previously pressed and trigger when 7 Segment Display shows 'F'
 		Date_Flag = true;
 		SW4 = false;
 		return 1;
@@ -253,7 +314,7 @@ int MODE_TOGGLE(int i){
 		return 0;
 }
 
-int GET_INFORMATION(){
+void GET_INFORMATION(){			//Call function when SW3 EINT is triggered
 	Sensors_Read();
 	OLED_Update();
 	SW3 = false;
@@ -270,36 +331,36 @@ void PASSIVE(){
 	Date_Flag = false;
 	Waste_Flag = false;
 	Algae_Flag = false;
-	// Disable EINT3 interrupt
+	// Disable EINT3 interrupt, not used in PASSIVE mode
 	NVIC_DisableIRQ(EINT3_IRQn);
 
 	while (!Date_Flag){
+
+		//Start up OLED in PASSIVE mode
 		Sensors_Read();
-		sprintf(text, "				PASSIVE		");
-		oled_putString(1, 00, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+		OLED_Update_PASSIVE();
 		OLED_Update();
 
 		while(1){
-			MODE_TOGGLE(i);
+			MODE_TOGGLE(i);										//checks if need to go to DATE mode
 
-			if (check_time(SSD_TIME_UNIT, &initial_time_SSD)){
-				if (Date_Flag){
+			if (check_time(SSD_TIME_UNIT, &initial_time_SSD)){	//Wait 1 second before updating 7 segment display
+				if (Date_Flag){									//Go out of loop and exit PASSIVE mode, goes into DATE mode
 					break;
+				}
+				if ((i == 6)||(i == 11)||(i == 16)){			//7 Segment Display showing '5', 'A', or 'F'
+					Sensors_Read();
+					OLED_Update();
 				}
 				if(i == 16){
 					i = 0;
 				}
 				led7seg_setChar(array[i], FALSE);
 				i++;
-				printf("SW4 = %d     DATE_FLAG = %d      i = %d\n", SW4, Date_Flag, i);
+//				printf("SW4 = %d     DATE_FLAG = %d      i = %d\n", SW4, Date_Flag, i);
 			}
 
-			if (check_i_PASSIVE(i)){
-				Sensors_Read();
-				OLED_Update();
-			}
-
-			if (check_time(RGB_BLINK_TIME, &initial_time_RGB)){
+			if (check_time(RGB_BLINK_TIME, &initial_time_RGB)){						//Wait 333ms before blinking any RGB LED
 				detected = detection_case(check_Waste(light), check_Algae(light));
 				blink_LED_PASSIVE(detected);
 			}
@@ -317,9 +378,8 @@ void DATE(){
 
 	while(!Passive_Flag){
 		steps = 0;
-		led7seg_setChar(' ', FALSE);
-		sprintf(text, "					DATE		");
-		oled_putString(1, 00, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+		led7seg_setChar(' ', FALSE); 	//turn of 7 segment display
+
 		OLED_Update_DATE();
 
 		// Clear GPIO Interrupt P2.10
@@ -331,7 +391,7 @@ void DATE(){
 			Decrease_LED_array(steps);
 			if(check_time(INDICATOR_TIME_UNIT, &initial_time_LED)){
 				steps++;
-				printf("Steps: %d\n", steps);
+//				printf("Steps: %d\n", steps);
 				if(steps == 17){
 					Passive_Flag = true;
 					break;
@@ -431,6 +491,7 @@ static void init_ssp(void)
 	PINSEL_ConfigPin(&PinCfg);
 
 	SSP_ConfigStructInit(&SSP_ConfigStruct);
+	SSP_ConfigStruct.ClockRate=20000000;
 	SSP_Init(LPC_SSP1, &SSP_ConfigStruct);
 	SSP_Cmd(LPC_SSP1, ENABLE);
 
@@ -466,9 +527,16 @@ int main (void) {
     acc_init();
     oled_init();
     led7seg_init();
-    temp_init(&getTicks);
+    //temp_init(&getTicks);
     light_init();
     light_enable();
+
+	NVIC_SetPriority(TIMER0_IRQn, 0);
+	NVIC_ClearPendingIRQ(TIMER0_IRQn);
+	NVIC_EnableIRQ(TIMER0_IRQn);
+
+	init_timer();
+    temp_init(&getusTicks);
 
     SysTick_Config(SystemCoreClock/1000);
 
