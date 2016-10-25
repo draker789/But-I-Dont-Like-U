@@ -22,12 +22,16 @@
 #include "rgb.h"
 #include "temp.h"
 #include "led7seg.h"
+#include "rotary.h"
 
 #define WARNING_LOWER			50
 #define WARNING_UPPER 			1000
 #define INDICATOR_TIME_UNIT		208
 #define SSD_TIME_UNIT			1000
 #define RGB_BLINK_TIME			333
+#define JOYSTICK_TIME_UNIT		30
+#define FULL_TIME_UNIT			2000
+
 
 
 /*****************************************************************************
@@ -99,13 +103,6 @@ void init_timer(void){
 
 }
 
-//Count instances of 100us using interrupt handlers and usTicks
-void TIMER0_IRQHandler(void)
-{
-		usTicks++;
-		LPC_TIM0->IR|=0x01;
-}
-
 /*
  * Declare Global Sensors Variables
  */
@@ -114,26 +111,49 @@ static float temperature;
 static int8_t xoff = 0, yoff = 0, zoff = 0;
 static int8_t x = 0, y = 0, z = 0;
 
+/*
+ * Declare Global text array
+ */
 static uint8_t text[100];
 
+/*
+ * Declare Global counter
+ */
+static int harvested = 0;
+
+/*
+ * Declare Global Flags
+ */
 static bool Algae_Flag = false;
 static bool Waste_Flag = false;
 
 static bool Start_Flag = false;
 static bool Date_Flag = false;
 static bool Passive_Flag = false;
+static bool Charge_Flag = false;
+static bool FULL = false;
 
 static bool SW4 = false;
 static bool SW3 = false;
 
+/*
+ * Interrupt Handlers
+ */
 void EINT3_IRQHandler(void){
-// Determine whether GPIO Interrupt P2.10 has occurred
+// Determine whether SW3 is pressed n falling edge
 	if ((LPC_GPIOINT->IO2IntStatF>>10)& 0x1){
 		SW3 = true;
 		// Clear GPIO Interrupt P2.10
 		LPC_GPIOINT->IO2IntClr = 1<<10;
 	}
 
+}
+
+//Count instances of 100us using interrupt handlers and usTicks
+void TIMER0_IRQHandler(void)
+{
+		usTicks++;
+		LPC_TIM0->IR|=0x01;
 }
 
 /*
@@ -148,6 +168,14 @@ static void Decrease_LED_array(uint8_t steps){
 	pca9532_setLeds(ledOn, 0xffff);
 }
 
+static void Increase_LED_array(uint8_t harvested){
+	uint16_t ledOn = 0;
+
+	ledOn = 0xffff << harvested;
+
+	pca9532_setLeds((~ledOn), 0xffff);
+}
+
 void Sensors_Read(){
 	temperature = (temp_read()/10.0);
 	light = light_read();
@@ -157,6 +185,10 @@ void Sensors_Read(){
 	z = z+zoff;
 
 }
+
+/*
+ * OLED-related Functions
+ */
 void OLED_Update(){
 
 	sprintf(text,"%.2f        ", temperature);
@@ -203,12 +235,54 @@ void OLED_Update_DATE(){
 	oled_putString(1, 50, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
 }
 
-int check_i_PASSIVE(int i){
-	if ((i == 6)||(i == 11)||(i == 16)){
-		return 1;
+void OLED_Update_CHARGE(){
+	int initial_time_full = getTicks();
+
+	oled_clearScreen(OLED_COLOR_BLACK);
+	while(!((check_time(FULL_TIME_UNIT, &initial_time_full)))){
+		//Show msg on OLED for 2 seconds
+		sprintf(text, "Fully Charged");
+		oled_putString(1, 20, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+		sprintf(text,"Returning to");
+		oled_putString(1, 30, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+		sprintf(text,"PASSIVE MODE");
+		oled_putString(1, 40, text, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
 	}
-	else
-		return 0;
+	oled_clearScreen(OLED_COLOR_BLACK);
+
+	return;
+}
+
+//Place 16 pixels as biofuels on OLED
+void place_biofuel(){
+	oled_putPixel(10, 15,OLED_COLOR_WHITE);
+	oled_putPixel(10, 30,OLED_COLOR_WHITE);
+	oled_putPixel(10, 45,OLED_COLOR_WHITE);
+	oled_putPixel(10, 60,OLED_COLOR_WHITE);
+	oled_putPixel(20, 10,OLED_COLOR_WHITE);
+	oled_putPixel(20, 25,OLED_COLOR_WHITE);
+	oled_putPixel(20, 40,OLED_COLOR_WHITE);
+	oled_putPixel(20, 55,OLED_COLOR_WHITE);
+	oled_putPixel(40, 15,OLED_COLOR_WHITE);
+	oled_putPixel(40, 30,OLED_COLOR_WHITE);
+	oled_putPixel(40, 45,OLED_COLOR_WHITE);
+	oled_putPixel(40, 60,OLED_COLOR_WHITE);
+	oled_putPixel(50, 10,OLED_COLOR_WHITE);
+	oled_putPixel(50, 25,OLED_COLOR_WHITE);
+	oled_putPixel(50, 40,OLED_COLOR_WHITE);
+	oled_putPixel(50, 55,OLED_COLOR_WHITE);
+
+	return;
+}
+
+/*
+ * Flag-related Functions
+ */
+
+void GET_INFORMATION(){			//Call function when SW3 EINT is triggered
+	Sensors_Read();
+	OLED_Update();
+	SW3 = false;
 }
 
 int check_Algae(int light){
@@ -252,6 +326,161 @@ int detection_case(int check_Waste, int check_Algae){
 		return 0;
 }
 
+int MODE_TOGGLE_Start(){
+	//SW4 is default pulled HIGH, check for LOW when pushed
+	if (!((GPIO_ReadValue(1) >> 31) & 0x01)){
+		Start_Flag = true;
+		return 1;
+	}
+	else
+		return 0;
+}
+
+int MODE_TOGGLE(int i){
+	if (!((GPIO_ReadValue(1) >> 31) & 0x01)){		//Check if SW4 was pressed
+		SW4 = true;
+		return 2;
+	}
+	else if (SW4 && (i == 16)){						//Check if SW4 was previously pressed and trigger when 7 Segment Display shows 'F'
+		Date_Flag = true;
+		SW4 = false;
+		return 1;
+	}
+	else
+		return 0;
+}
+
+int MODE_TOGGLE_Charge(int *count){
+
+	if((*count) >3){
+		Charge_Flag = true;
+		(*count = 0);
+		return 2;
+	}
+
+	if (rotary_read() == 1 ){						//triggers when rotary switch is rotated
+		(*count)++;
+		return 1;
+	}
+	else
+		return 0;
+}
+
+void check_harvested(){
+	if (harvested == 16){
+		OLED_Update_CHARGE();
+		harvested = 0;
+		pca9532_setLeds(0, 0xffff);					//turn off LED array
+		FULL = true;
+	}
+
+	return;
+}
+
+//check for number of harvested
+int check_filled(int currX, int currY, int arr[16]){
+	if (currX == 10 && currY == 15){
+		if(arr[0] == 0){
+			harvested++;
+			arr[0] = 1;
+		}
+	}
+	if (currX == 10 && currY == 30){
+		if(arr[1] == 0){
+			harvested++;
+			arr[1] = 1;
+		}
+	}
+	if (currX == 10 && currY == 45){
+		if(arr[2] == 0){
+			harvested++;
+			arr[2] = 1;
+		}
+	}
+	if (currX == 10 && currY == 60){
+		if(arr[3] == 0){
+			harvested++;
+			arr[3] = 1;
+		};
+	}
+	if (currX == 20 && currY == 10){
+		if(arr[4] == 0){
+			harvested++;
+			arr[4] = 1;
+		}
+	}
+	if (currX == 20 && currY == 25){
+		if(arr[5] == 0){
+			harvested++;
+			arr[5] = 1;
+		}
+	}
+	if (currX == 20 && currY == 40){
+		if(arr[6] == 0){
+			harvested++;
+			arr[6] = 1;
+		}
+	}
+	if (currX == 20 && currY == 55){
+		if(arr[7] == 0){
+			harvested++;
+			arr[7] = 1;
+		}
+	}
+	if (currX == 40 && currY == 15){
+		if(arr[8] == 0){
+			harvested++;
+			arr[8] = 1;
+		}
+	}
+	if (currX == 40 && currY == 30){
+		if(arr[9] == 0){
+			harvested++;
+			arr[9] = 1;
+		}
+	}
+	if (currX == 40 && currY == 45){
+		if(arr[10] == 0){
+			harvested++;
+			arr[10] = 1;
+		}
+	}
+	if (currX == 40 && currY == 60){
+		if(arr[11] == 0){
+			harvested++;
+			arr[11] = 1;
+		}
+	}
+	if (currX == 50 && currY == 10){
+		if(arr[12] == 0){
+			harvested++;
+			arr[12] = 1;
+		}
+	}
+	if (currX == 50 && currY == 25){
+		if(arr[13] == 0){
+			harvested++;
+			arr[13] = 1;
+		}
+	}
+	if (currX == 50 && currY == 40){
+		if(arr[14] == 0){
+			harvested++;
+			arr[14] = 1;
+		}
+	}
+	if (currX == 50 && currY == 55){
+		if(arr[15] == 0){
+			harvested++;
+			arr[15] = 1;
+		}
+	}
+}
+
+/*
+ * MISC large Functions
+ */
+
 //Blink correct combination of LED according to the detected scenario
 void blink_LED_PASSIVE(int detected){
 	int Red_port = 2;
@@ -290,34 +519,103 @@ void blink_LED_PASSIVE(int detected){
 	}
 }
 
-int MODE_TOGGLE_Start(){
-	//SW4 is default pulled HIGH, check for LOW when pushed
-	if (!((GPIO_ReadValue(1) >> 31) & 0x01)){
-		Start_Flag = true;
-		return 1;
-	}
-	else
-		return 0;
+//Draws line on OLED using the Joystick
+static void drawOled(uint8_t joyState, int arr[16])
+{
+    static int wait = 0;
+    static uint8_t currX = 48;
+    static uint8_t currY = 32;
+    static uint8_t lastX = 0;
+    static uint8_t lastY = 0;
+
+    if ((joyState & JOYSTICK_CENTER) != 0) {
+        oled_clearScreen(OLED_COLOR_BLACK);
+        return;
+    }
+
+    if (wait++ < 3)
+        return;
+
+    wait = 0;
+
+    if ((joyState & JOYSTICK_UP) != 0 && currY > 0) {
+        currY--;
+    }
+
+    if ((joyState & JOYSTICK_DOWN) != 0 && currY < OLED_DISPLAY_HEIGHT-1) {
+        currY++;
+    }
+
+    if ((joyState & JOYSTICK_RIGHT) != 0 && currX < OLED_DISPLAY_WIDTH-1) {
+        currX++;
+    }
+
+    if ((joyState & JOYSTICK_LEFT) != 0 && currX > 0) {
+        currX--;
+    }
+
+    if (lastX != currX || lastY != currY) {
+        oled_putPixel(currX, currY, OLED_COLOR_WHITE);
+        check_filled(currX, currY, arr);					//check for harvests
+        Increase_LED_array(harvested);						//update LED array with number of harvests
+        lastX = currX;
+        lastY = currY;
+    }
 }
 
-int MODE_TOGGLE(int i){
-	if (!((GPIO_ReadValue(1) >> 31) & 0x01)){		//Check if SW4 was pressed
-		SW4 = true;
-		return 2;
-	}
-	else if (SW4 && (i == 16)){						//Check if SW4 was previously pressed and trigger when 7 Segment Display shows 'F'
-		Date_Flag = true;
-		SW4 = false;
-		return 1;
-	}
-	else
-		return 0;
-}
 
-void GET_INFORMATION(){			//Call function when SW3 EINT is triggered
+/*
+ * Initialization Functions
+ */
+
+
+void passive_reinit(){
+	//Start up OLED after CHARGE mode
 	Sensors_Read();
+	OLED_Update_PASSIVE();
 	OLED_Update();
-	SW3 = false;
+	Date_Flag = false;
+	Waste_Flag = false;
+	Algae_Flag = false;
+
+	return;
+}
+
+void charge_init(){
+	//initialize CHARGE mode
+	GPIO_ClearValue( 2, 1);			//turn off red led
+	GPIO_ClearValue( 0, (1<<26) );	//turn off blue led
+	led7seg_setChar('C', FALSE); 	//Show a 'C' on 7 segment display
+	oled_clearScreen(OLED_COLOR_BLACK);
+	place_biofuel();
+
+	return;
+}
+
+/*
+ * 3 Main Modes loop
+ */
+void CHARGE(){
+	uint8_t state = 0;
+	int initial_time_Joystick = getTicks();
+	int arr[16] ={0};
+
+	FULL = false;
+	charge_init();
+
+	while(!FULL){
+
+		state = joystick_read();
+
+		//Draw line
+		if(check_time(JOYSTICK_TIME_UNIT, &initial_time_Joystick)){
+			if (state != 0){
+				drawOled(state, arr);
+			}
+		}
+		//check if finish harvesting
+		check_harvested();
+	}
 }
 
 void PASSIVE(){
@@ -325,6 +623,7 @@ void PASSIVE(){
 	int detected = 0;
 	int initial_time_SSD = getTicks();
 	int initial_time_RGB = getTicks();
+	int count = 0;
 
 	char array[16] = {'0','1','2','3','4','5','6','7','8','9','A','8','C','0','E','F'};
 
@@ -343,9 +642,19 @@ void PASSIVE(){
 
 		while(1){
 			MODE_TOGGLE(i);										//checks if need to go to DATE mode
+			MODE_TOGGLE_Charge(&count);							//checks if need to go to CHARGE mode
+
+			//in CHARGE mode
+			while(Charge_Flag){
+				CHARGE();
+				Charge_Flag = false;
+				passive_reinit();
+				i = 0;
+				break;											//Go out of the loop and restart PASSIVE mode
+			}
 
 			if (check_time(SSD_TIME_UNIT, &initial_time_SSD)){	//Wait 1 second before updating 7 segment display
-				if (Date_Flag){									//Go out of loop and exit PASSIVE mode, goes into DATE mode
+				if (Date_Flag){									//Go out of loop and exit PASSIVE mode, go to DATE();
 					break;
 				}
 				if ((i == 6)||(i == 11)||(i == 16)){			//7 Segment Display showing '5', 'A', or 'F'
@@ -357,7 +666,6 @@ void PASSIVE(){
 				}
 				led7seg_setChar(array[i], FALSE);
 				i++;
-//				printf("SW4 = %d     DATE_FLAG = %d      i = %d\n", SW4, Date_Flag, i);
 			}
 
 			if (check_time(RGB_BLINK_TIME, &initial_time_RGB)){						//Wait 333ms before blinking any RGB LED
@@ -389,15 +697,14 @@ void DATE(){
 
 		while(1){
 			Decrease_LED_array(steps);
-			if(check_time(INDICATOR_TIME_UNIT, &initial_time_LED)){
+			if(check_time(INDICATOR_TIME_UNIT, &initial_time_LED)){				//Wait for 208ms to turn off need LED in the LED array
 				steps++;
-//				printf("Steps: %d\n", steps);
-				if(steps == 17){
+				if(steps == 17){												//All LED off in LED Array
 					Passive_Flag = true;
-					break;
+					break;														//Break out of loop and exit DATE mode, go to PASSIVE();
 				}
 			}
-			if(SW3){
+			if(SW3){															//Checks if SW3 EINT is triggered
 				GET_INFORMATION();
 			}
 		}
@@ -464,6 +771,24 @@ static void init_GPIO(void)
 	PINSEL_ConfigPin(&PinCfg);
 	GPIO_SetDir(0, 1<<26, 1);
 
+	//Rotary Switch
+	//Use PIO1_0 -> P0.24
+	PinCfg.Portnum = 0;
+	PinCfg.Pinnum = 24;
+	PinCfg.Funcnum = 0;
+	PinCfg.OpenDrain = 0;
+	PinCfg.Pinmode = 0;
+	PINSEL_ConfigPin(&PinCfg);
+	GPIO_SetDir(0, 1<<24, 0);
+
+	//Use PIO1_1 -> P0.25
+	PinCfg.Portnum = 0;
+	PinCfg.Pinnum = 25;
+	PinCfg.Funcnum = 0;
+	PinCfg.OpenDrain = 0;
+	PinCfg.Pinmode = 0;
+	PINSEL_ConfigPin(&PinCfg);
+	GPIO_SetDir(0, 1<<25, 0);
 }
 
 static void init_ssp(void)
@@ -530,6 +855,7 @@ int main (void) {
     //temp_init(&getTicks);
     light_init();
     light_enable();
+    rotary_init();
 
 	NVIC_SetPriority(TIMER0_IRQn, 0);
 	NVIC_ClearPendingIRQ(TIMER0_IRQn);
@@ -539,7 +865,6 @@ int main (void) {
     temp_init(&getusTicks);
 
     SysTick_Config(SystemCoreClock/1000);
-
 
 
     /*
@@ -561,16 +886,13 @@ int main (void) {
     while (1)
     {
     led7seg_setChar(' ', FALSE);
-    MODE_TOGGLE_Start();
+    MODE_TOGGLE_Start();			//Checks when SW4 is first pressed to start program
 
     while(Start_Flag){
+    	//Toggle between PASSIVE mode and DATE mode
     	PASSIVE();
     	DATE();
-    }
-
-	/* ####### Accelerometer and LEDs  ###### */
-	/* # */
-
+    	}
 	}
 }
 
