@@ -13,7 +13,7 @@
 #include "lpc17xx_i2c.h"
 #include "lpc17xx_ssp.h"
 #include "lpc17xx_timer.h"
-
+#include "lpc17xx_uart.h"
 
 #include "joystick.h"
 #include "pca9532.h"
@@ -138,6 +138,7 @@ static bool FULL = false;
 static bool EXIT = false;
 
 static bool SW4 = false;
+static bool next_SW4 = false;
 static bool SW3 = false;
 
 /*
@@ -387,18 +388,29 @@ int MODE_TOGGLE_Start(){
 		return 0;
 }
 
-int MODE_TOGGLE(int i){
-	if (!((GPIO_ReadValue(1) >> 31) & 0x01)){		//Check if SW4 was pressed
+void MODE_TOGGLE(int i){
+	if (next_SW4 == true && i != 16) {
 		SW4 = true;
-		return 2;
+		next_SW4 = false;
+	}
+
+	if (!((GPIO_ReadValue(1) >> 31) & 0x01)){		//Check if SW4 was pressed
+		if (i != 16) {
+			SW4 = true;
+			return;
+		}
+		else {
+			next_SW4 = true;
+			return;
+		}
 	}
 	else if (SW4 && (i == 16)){						//Check if SW4 was previously pressed and trigger when 7 Segment Display shows 'F'
 		Date_Flag = true;
 		SW4 = false;
-		return 1;
+		return;
 	}
 	else
-		return 0;
+		return;
 }
 
 int MODE_TOGGLE_Charge(int *count){
@@ -912,12 +924,36 @@ static void init_i2c(void)
 	I2C_Cmd(LPC_I2C2, ENABLE);
 }
 
+void pinsel_uart3 (void) {
+	PINSEL_CFG_Type PinCfg;
+	PinCfg.Funcnum = 2;
+	PinCfg.Pinnum = 0;
+	PinCfg.Portnum = 0;
+	PINSEL_ConfigPin (&PinCfg);
+	PinCfg.Pinnum = 1;
+	PINSEL_ConfigPin (&PinCfg);
+}
+
+void init_uart (void) {
+	UART_CFG_Type uartCfg;
+	uartCfg.Baud_rate = 115200;
+	uartCfg.Databits = UART_DATABIT_8;
+	uartCfg.Parity = UART_PARITY_NONE;
+	uartCfg.Stopbits = UART_STOPBIT_1;
+	//pin select for uart3
+	pinsel_uart3();
+	//supply power & setup working par.s for uart3
+	UART_Init(LPC_UART3, &uartCfg);
+	//enable transmit for uart3
+	UART_TxCmd(LPC_UART3, ENABLE);
+}
 
 int main (void) {
 
     init_i2c();
     init_ssp();
     init_GPIO();
+    init_uart();
 
     pca9532_init();
     joystick_init();
