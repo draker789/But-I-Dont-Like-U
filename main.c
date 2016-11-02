@@ -7,6 +7,7 @@
  ******************************************************************************/
 #include <stdbool.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "lpc17xx_pinsel.h"
 #include "lpc17xx_gpio.h"
@@ -118,11 +119,13 @@ static int8_t x = 0, y = 0, z = 0;
  * Declare Global text array
  */
 static uint8_t text[100];
+static char* UART_msg = NULL;
 
 /*
  * Declare Global counter
  */
 static int harvested = 0;
+static int UART_msg_counter = 1;
 
 /*
  * Declare Global Flags
@@ -436,6 +439,10 @@ void check_harvested(){
 		harvested = 0;
 		pca9532_setLeds(0, 0xffff);					//turn off LED array
 		FULL = true;
+
+		//Send msg to SAFE upon fully harvested
+		UART_msg = "Biofuels fully harvested. Leaving CHARGE mode. \r\n";
+		UART_Send(LPC_UART3, (uint8_t *)UART_msg, strlen(UART_msg), BLOCKING);
 	}
 
 	return;
@@ -448,6 +455,10 @@ void check_exit(){
 		harvested = 0;
 		pca9532_setLeds(0, 0xffff);					//turn off LED array
 		FULL = true;
+
+		//Send msg to SAFE upon CHARGE mode exit trigger
+		UART_msg = "Giving up on harvesting. Leaving CHARGE Mode. \r\n";
+		UART_Send(LPC_UART3, (uint8_t *)UART_msg, strlen(UART_msg), BLOCKING);
 	}
 
 	return;
@@ -648,13 +659,21 @@ static void drawOled(uint8_t joyState, int arr[16])
     }
 }
 
+/*
+ * UART related functions
+ */
+
+void send_to_SAFE(){
+
+
+}
 
 /*
  * Initialization Functions
  */
 
 
-void passive_reinit(){
+void passive_init(){
 	//Start up OLED after exiting CHARGE mode
 	Sensors_Read();
 	OLED_Update_PASSIVE();
@@ -663,6 +682,10 @@ void passive_reinit(){
 	Waste_Flag = false;
 	Algae_Flag = false;
 
+	//Send msg to SAFE upon entering PASSIVE Mode
+	UART_msg = "Entering PASSIVE Mode. \r\n";
+	UART_Send(LPC_UART3, (uint8_t *)UART_msg, strlen(UART_msg), BLOCKING);
+
 	return;
 }
 
@@ -670,9 +693,13 @@ void charge_init(){
 	//initialize CHARGE mode
 	GPIO_ClearValue( 2, 1);			//turn off red led
 	GPIO_ClearValue( 0, (1<<26) );	//turn off blue led
-	led7seg_setChar('C', FALSE); 	//Show a 'C' on 7 segment display
+	led7seg_setChar('C', TRUE); 	//Show a 'C' on 7 segment display
 	oled_clearScreen(OLED_COLOR_BLACK);
 	place_biofuel();
+
+	//Send msg to SAFE upon entering CHARGE Mode
+	UART_msg = "Leaving PASSIVE Mode. Entering CHARGE Mode. \r\n";
+	UART_Send(LPC_UART3, (uint8_t *)UART_msg, strlen(UART_msg), BLOCKING);
 
 	return;
 }
@@ -721,10 +748,7 @@ void PASSIVE(){
 
 	while (!Date_Flag){
 
-		//Start up OLED in PASSIVE mode
-		Sensors_Read();
-		OLED_Update_PASSIVE();
-		OLED_Update();
+		passive_init();
 
 		while(1){
 			MODE_TOGGLE(i);										//checks if need to go to DATE mode
@@ -734,7 +758,7 @@ void PASSIVE(){
 			while(Charge_Flag){
 				CHARGE();
 				Charge_Flag = false;
-				passive_reinit();
+				passive_init();
 				i = 0;
 				break;											//Go out of the loop and restart PASSIVE mode
 			}
@@ -750,7 +774,7 @@ void PASSIVE(){
 				if(i == 16){									//restart 7 Segment Display from '0'
 					i = 0;
 				}
-				led7seg_setChar(array[i], FALSE);
+				led7seg_setChar(array[i], TRUE);
 				i++;
 			}
 
@@ -769,6 +793,10 @@ void DATE(){
 	Passive_Flag = false;
 	GPIO_ClearValue( 2, 1);			//turn off red led
 	GPIO_ClearValue( 0, (1<<26) );	//turn off blue led
+
+	//Send msg to SAFE upon entering DATE Mode
+	UART_msg = "Leaving PASSIVE Mode. Entering DATE Mode. \r\n";
+	UART_Send(LPC_UART3, (uint8_t *)UART_msg, strlen(UART_msg), BLOCKING);
 
 	while(!Passive_Flag){
 		steps = 0;
@@ -997,15 +1025,39 @@ int main (void) {
 	GPIO_ClearValue( 2, 1);			//turn off red led
 	GPIO_ClearValue( 0, (1<<26) );	//turn off blue led
 
-    while (1)
-    {
-    led7seg_setChar(' ', FALSE);
-    MODE_TOGGLE_Start();			//Checks when SW4 is first pressed to start program
 
-    while(Start_Flag){
-    	//Toggle between PASSIVE mode and DATE mode
-    	PASSIVE();
-    	DATE();
+//	//UART TEST
+//	msg = "Welcome to hell \r\n";
+//	UART_Send(LPC_UART3, (uint8_t *)msg, strlen(msg), BLOCKING);
+//	UART_Receive(LPC_UART3, &data, 1, BLOCKING);
+//	UART_Send(LPC_UART3, &data, 1, BLOCKING);
+//	//TEST UART
+//
+    while (1){
+
+//		//TEST UART
+//		do{
+//			UART_Receive(LPC_UART3, &data, 1, BLOCKING);
+//
+//			if(data != '\r'){
+//				len++;
+//				line[len-1] = data;
+//			}
+//		}while ((len<64) && (data != '\r'));
+//		line[len] = 0;
+//		UART_SendString(LPC_UART3, &line);
+//		printf("--%s--\n", line);
+//		line = NULL;
+//		//TEST UART
+
+
+		led7seg_setChar(' ', FALSE);
+		MODE_TOGGLE_Start();			//Checks when SW4 is first pressed to start program
+
+		while(Start_Flag){
+			//Toggle between PASSIVE mode and DATE mode
+			PASSIVE();
+			DATE();
     	}
 	}
 }
