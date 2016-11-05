@@ -4,7 +4,7 @@
  *   Copyright(C) 2016, Liu Ren Jie, Ong Ming Lun
  *   All rights reserved.
  *
- ******************************************************************************/
+/******************************************************************************/
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //Libraries Import
@@ -39,7 +39,7 @@
 #define INDICATOR_TIME_UNIT		208
 #define SSD_TIME_UNIT			1000
 #define RGB_BLINK_TIME			333
-#define JOYSTICK_TIME_UNIT		30
+#define JOYSTICK_TIME_UNIT		20
 #define FULL_TIME_UNIT			2000
 #define TEMP_SCALAR_DIV10 		1
 #define NUM_HALF_PERIODS 		300
@@ -92,12 +92,19 @@ static bool SW4 = false;
 static bool next_SW4 = false;
 static bool SW3 = false;
 
+static bool uartUp = false;
+static bool uartDown = false;
+static bool uartRight = false;
+static bool uartLeft = false;
+static bool uartGet = false;
+
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // Declare Temperature Sensor related interrupt Global variables
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 uint32_t old_temp_ticks = 0;
 uint32_t temp_time_period = 0;
 int temp_period_count = 0;
+
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // Set up msTicks related variables and functions
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -202,6 +209,38 @@ void TIMER0_IRQHandler(void)
 		LPC_TIM0->IR|=0x01;			//Clear Timer0 Interrupt by writing '1' to Interrupt Register
 }
 
+// When user keys in a character, UART receives it
+// [W,A,S,D] = [UP,LEFT,DOWN,RIGHT]
+// [SPACEBAR] = EXIT
+void UART3_IRQHandler(void) {
+	uint8_t data;
+	//Receive one letter
+	UART_Receive(LPC_UART3, &data, 1, BLOCKING);
+
+	// Decode letter to up, down, left, right & EXIT
+	if(data == 'w'){
+		uartUp = true;
+	}
+	if(data == 's'){
+		uartDown = true;
+	}
+	if(data == 'd'){
+		uartRight = true;
+	}
+	if(data == 'a')	{
+		uartLeft = true;
+	}
+	//if SPACEBAR key is pressed, exit CHARGE Mode
+	if(data == ' '){
+		EXIT = true;
+	}
+
+	//Triggers draw line on OLED function
+	uartGet = true;
+	//Clear Pending to complete RX request
+	NVIC_ClearPendingIRQ(UART3_IRQn);
+}
+
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // Abstracted Functions
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -231,7 +270,6 @@ void Sensors_Read(){
 	x = x+xoff;
 	y = y+yoff;
 	z = z+zoff;
-
 }
 
 //Blink correct combination of LED according to the detected scenario
@@ -278,7 +316,7 @@ void blink_LED_PASSIVE(int detected){
 	}
 }
 
-//Draws line on OLED using the Joystick
+//Draws line on OLED using the Joystick or keyboard via UART
 static void drawOled(uint8_t joyState, int arr[16])
 {
     static int wait = 0;
@@ -293,25 +331,30 @@ static void drawOled(uint8_t joyState, int arr[16])
         return;
     }
 
-    if (wait++ < 3)
+    if (wait++ < 3){
         return;
+    }
 
     wait = 0;
 
-    if ((joyState & JOYSTICK_UP) != 0 && currY > 0) {
+    if (((joyState  & JOYSTICK_UP) != 0 && currY > 0) || ((uartUp) && currY > 0))  {
         currY--;
+        uartUp = false;
     }
 
-    if ((joyState & JOYSTICK_DOWN) != 0 && currY < OLED_DISPLAY_HEIGHT-1) {
+    if (((joyState & JOYSTICK_DOWN) != 0 && currY < OLED_DISPLAY_HEIGHT-1) || ((uartDown) && currY < OLED_DISPLAY_HEIGHT-1)) {
         currY++;
+        uartDown = false;
     }
 
-    if ((joyState & JOYSTICK_RIGHT) != 0 && currX < OLED_DISPLAY_WIDTH-1) {
+    if (((joyState & JOYSTICK_RIGHT) != 0 && currX < OLED_DISPLAY_WIDTH-1) || ((uartRight) && currX < OLED_DISPLAY_WIDTH-1)){
         currX++;
+        uartRight = false;
     }
 
-    if ((joyState & JOYSTICK_LEFT) != 0 && currX > 0) {
+    if (((joyState & JOYSTICK_LEFT) != 0 && currX > 0) || ((uartLeft) && currX > 0)) {
         currX--;
+        uartLeft = false;
     }
 
     if (lastX != currX || lastY != currY) {
@@ -321,6 +364,7 @@ static void drawOled(uint8_t joyState, int arr[16])
         lastX = currX;
         lastY = currY;
     }
+    uartGet = false;
 }
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -537,6 +581,11 @@ int MODE_TOGGLE_Charge(int *count){
 //Check if biofuels fully harvested
 void check_harvested(){
 	if (harvested == 16){
+
+		//Disable UART3 interrupt handler since it is not needed anymore
+		NVIC_ClearPendingIRQ(UART3_IRQn);
+		NVIC_DisableIRQ(UART3_IRQn);
+
 		//Send msg to SAFE upon fully harvested
 		UART_msg = "Biofuels fully harvested. Leaving CHARGE mode. \r\n";
 		UART_Send(LPC_UART3, (uint8_t *)UART_msg, strlen(UART_msg), BLOCKING);
@@ -552,6 +601,11 @@ void check_harvested(){
 //Check if exit is triggered while in CHARGE();
 void check_exit(){
 	if(EXIT){
+
+		//Disable UART3 interrupt handler since it is not needed anymore
+		NVIC_ClearPendingIRQ(UART3_IRQn);
+		NVIC_DisableIRQ(UART3_IRQn);
+
 		//Send msg to SAFE upon CHARGE mode exit trigger
 		UART_msg = "Giving up on harvesting. Leaving CHARGE Mode. \r\n";
 		UART_Send(LPC_UART3, (uint8_t *)UART_msg, strlen(UART_msg), BLOCKING);
@@ -727,13 +781,23 @@ void priority_init(){
 	NVIC_ClearPendingIRQ(TIMER0_IRQn);
 	NVIC_EnableIRQ(TIMER0_IRQn);
 
-    //next highest priority given to EINT3 interrupt handler
+    //Next highest priority given to EINT3 interrupt handler
 	PG=5, PP=0b10, SP=0b011;
 	ans = NVIC_EncodePriority(PG,PP,SP);
 	NVIC_SetPriority(EINT3_IRQn,ans);
 	NVIC_ClearPendingIRQ(EINT3_IRQn);
 	NVIC_EnableIRQ(EINT3_IRQn);
+
+	//Lowest priority given to UART3 interrupt handler
+	PG=5, PP=0b11, SP=0b011;
+	ans = NVIC_EncodePriority(PG,PP,SP);
+	NVIC_SetPriority(UART3_IRQn,ans);
+	NVIC_ClearPendingIRQ(UART3_IRQn);
+	NVIC_EnableIRQ(UART3_IRQn);
+	// Configure UART3 to enable RBR (Receiver Buffer Register) Interrupt
+	UART_IntConfig(LPC_UART3, UART_INTCFG_RBR, ENABLE);
 }
+
 void passive_init(){
 	Sensors_Read();
 	OLED_Update_PASSIVE();
@@ -781,12 +845,17 @@ void CHARGE(){
 	while(!FULL){
 		state = joystick_read();
 
-		//Draw line
+		//Draw line if joystick is used
 		if(check_time(JOYSTICK_TIME_UNIT, &initial_time_Joystick)){
-			if (state != 0){
+			if ((state != 0)){
 				drawOled(state, arr);
 			}
 		}
+		//Draw line if keyboard is used
+		if (uartGet){
+			drawOled(0, arr);
+		}
+
 		//check if finish harvesting
 		check_harvested();
 		//check if exit is pressed
@@ -808,6 +877,10 @@ void PASSIVE(){
 	Algae_Flag = false;
 	SW4 = false;
 
+	//Disable UART3 interrupt handler since it is not used yet
+	NVIC_ClearPendingIRQ(UART3_IRQn);
+	NVIC_DisableIRQ(UART3_IRQn);
+
 	while (!Date_Flag){
 		passive_init();
 
@@ -817,6 +890,10 @@ void PASSIVE(){
 
 			//in CHARGE Mode
 			while(Charge_Flag){
+				//Enable UART3 interrupt handler to be used in CHARGE Mode
+				NVIC_ClearPendingIRQ(UART3_IRQn);
+				NVIC_EnableIRQ(UART3_IRQn);
+
 				CHARGE();
 				//Exited CHARGE Mode
 				Charge_Flag = false;
@@ -967,7 +1044,7 @@ static void init_GPIO(void)
 
 static void init_ssp(void)
 {
-	//Initialise 7 Segment Display and OLED
+	//Initialize 7 Segment Display and OLED
 	//MOSI PIO0_9  -> P0.9
 	//MISO PIO0_8  -> P0.8
 	//SCK  PIO2_11 -> P0.7
